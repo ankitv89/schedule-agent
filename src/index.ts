@@ -8,6 +8,11 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 
+import path from "path";
+
+// Serve static UI frontend
+app.use(express.static(path.join(__dirname, "../public")));
+
 // Mount the MCP SSE Server
 app.use("/mcp", mcpRouter);
 
