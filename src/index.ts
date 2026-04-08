@@ -1,17 +1,31 @@
 import "dotenv/config";
 import express from "express";
+import path from "path";
+import fs from "fs";
+import swaggerUi from "swagger-ui-express";
 import { mcpRouter } from "./mcp/server";
 import { MCPClientManager } from "./mcp/client";
 import { Orchestrator } from "./agents/Orchestrator";
 
 const app = express();
+
 const PORT = process.env.PORT || 8080;
-
-
-import path from "path";
 
 // Serve static UI frontend
 app.use(express.static(path.join(__dirname, "../public")));
+
+// Swagger UI Documentation
+const swaggerDocument = JSON.parse(fs.readFileSync(path.join(__dirname, "../swagger.json"), "utf8"));
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+
+// API Key Security Middleware for /api routes
+app.use("/api", (req, res, next) => {
+  const apiKey = req.header("x-api-key");
+  if (process.env.APP_API_KEY && apiKey !== process.env.APP_API_KEY) {
+    return res.status(401).json({ error: "Unauthorized: Missing or invalid x-api-key header" });
+  }
+  next();
+});
 
 // Mount the MCP SSE Server
 app.use("/mcp", mcpRouter);
@@ -36,7 +50,7 @@ async function initSystem() {
 }
 
 app.post("/api/chat", express.json(), async (req, res) => {
-  const { message, sessionId = "default-session" } = req.body;
+  const { message, sessionId = "default-session", refreshToken } = req.body;
   
   if (!orchestrator) {
     return res.status(503).json({ error: "Agent system not ready yet" });
@@ -46,7 +60,7 @@ app.post("/api/chat", express.json(), async (req, res) => {
     return res.status(400).json({ error: "Missing message body" });
   }
   
-  const response = await orchestrator.handleUserMessage(message, sessionId);
+  const response = await orchestrator.handleUserMessage(message, sessionId, refreshToken);
   res.json({ response });
 });
 

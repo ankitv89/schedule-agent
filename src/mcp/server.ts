@@ -6,6 +6,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { PrismaClient } from "@prisma/client";
 import express from "express";
+import { google } from "googleapis";
 
 const prisma = new PrismaClient();
 
@@ -46,24 +47,28 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "create_event",
-        description: "Create a new calendar event.",
+        description: "Create a new calendar event. Must seamlessly bind the user's provided refresh token.",
         inputSchema: {
           type: "object",
           properties: {
+            refreshToken: { type: "string" },
             title: { type: "string" },
             startTime: { type: "string", description: "ISO 8601 date string" },
             endTime: { type: "string", description: "ISO 8601 date string" },
             location: { type: "string" }
           },
-          required: ["title", "startTime", "endTime"],
+          required: ["refreshToken", "title", "startTime", "endTime"],
         },
       },
       {
         name: "list_events",
-        description: "List calendar events.",
+        description: "List calendar events. Must bind the provided active refresh token.",
         inputSchema: {
           type: "object",
-          properties: {},
+          properties: {
+            refreshToken: { type: "string" }
+          },
+          required: ["refreshToken"]
         },
       },
       {
@@ -112,21 +117,43 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { toolResult: tasks, content: [{ type: "text", text: `Tasks: ${JSON.stringify(tasks)}` }] };
     }
     else if (name === "create_event") {
-      const dbEvent = await prisma.event.create({
-        data: {
-          title: args?.title as string,
-          startTime: new Date(args?.startTime as string),
-          endTime: new Date(args?.endTime as string),
-          location: args?.location as string | undefined,
-        },
+      const oauthLocal = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, "urn:ietf:wg:oauth:2.0:oob");
+      oauthLocal.setCredentials({ refresh_token: args?.refreshToken as string });
+      const calendarLocal = google.calendar({ version: "v3", auth: oauthLocal });
+
+      const eventInfo = {
+        summary: args?.title as string,
+        location: args?.location as string | undefined,
+        start: { dateTime: args?.startTime as string },
+        end: { dateTime: args?.endTime as string },
+      };
+      
+      const gcalRes = await calendarLocal.events.insert({
+        calendarId: 'primary',
+        requestBody: eventInfo,
       });
-      return { toolResult: dbEvent, content: [{ type: "text", text: `Event created: ${JSON.stringify(dbEvent)}` }] };
+      return { toolResult: gcalRes.data, content: [{ type: "text", text: `Google Calendar event created: ${gcalRes.data.htmlLink}` }] };
     }
     else if (name === "list_events") {
-      const events = await prisma.event.findMany({
-        orderBy: { startTime: 'asc' },
+      const oauthLocal = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, "urn:ietf:wg:oauth:2.0:oob");
+      oauthLocal.setCredentials({ refresh_token: args?.refreshToken as string });
+      const calendarLocal = google.calendar({ version: "v3", auth: oauthLocal });
+
+      const gcalRes = await calendarLocal.events.list({
+        calendarId: 'primary',
+        timeMin: new Date().toISOString(),
+        maxResults: 10,
+        singleEvents: true,
+        orderBy: 'startTime',
       });
-      return { toolResult: events, content: [{ type: "text", text: `Events: ${JSON.stringify(events)}` }] };
+      const events = gcalRes.data.items || [];
+      const formattedEvents = events.map(e => ({
+        title: e.summary,
+        start: e.start?.dateTime || e.start?.date,
+        end: e.end?.dateTime || e.end?.date,
+        link: e.htmlLink
+      }));
+      return { toolResult: formattedEvents, content: [{ type: "text", text: `Upcoming events: ${JSON.stringify(formattedEvents)}` }] };
     }
     else if (name === "save_note") {
       const note = await prisma.note.create({
@@ -157,12 +184,20 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-let transport: SSEServerTransport;
+let transport: SSEServerTransport | null = null;
 export const mcpRouter = express.Router();
 
 mcpRouter.get("/sse", async (req, res) => {
-  transport = new SSEServerTransport("/mcp/messages", res);
-  await mcpServer.connect(transport);
+  try {
+    if (transport) {
+      await mcpServer.close().catch(() => {});
+    }
+    transport = new SSEServerTransport("/mcp/messages", res);
+    await mcpServer.connect(transport);
+  } catch (e: any) {
+    console.error("SSE Connection Error:", e.message);
+    res.status(500).send(e.message);
+  }
 });
 
 mcpRouter.post("/messages", async (req, res) => {

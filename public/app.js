@@ -3,6 +3,18 @@ document.addEventListener('DOMContentLoaded', () => {
   const chatInput = document.getElementById('chat-input');
   const chatBox = document.getElementById('chat-box');
 
+  let apiKey = sessionStorage.getItem('APP_API_KEY');
+  if (!apiKey) {
+    apiKey = prompt("Please enter the Server API Key to connect:");
+    if (apiKey) sessionStorage.setItem('APP_API_KEY', apiKey);
+  }
+
+  let googleRefreshToken = sessionStorage.getItem('GOOGLE_REFRESH_TOKEN');
+  if (!googleRefreshToken) {
+    googleRefreshToken = prompt("Please enter your Google Calendar Refresh Token (Optional but required for calendar access):");
+    if (googleRefreshToken) sessionStorage.setItem('GOOGLE_REFRESH_TOKEN', googleRefreshToken);
+  }
+
   const generatedSessionId = 'session-' + Math.random().toString(36).substr(2, 9);
 
   chatForm.addEventListener('submit', async (e) => {
@@ -20,8 +32,15 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, sessionId: generatedSessionId })
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey || ''
+        },
+        body: JSON.stringify({ 
+          message: text, 
+          sessionId: generatedSessionId,
+          refreshToken: googleRefreshToken || ''
+        })
       });
 
       const data = await res.json();
